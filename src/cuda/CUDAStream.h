@@ -24,6 +24,16 @@
 #define TBSIZE 1024
 #define DOT_NUM_BLOCKS 256
 
+#define ESTIMATE 1
+
+#ifdef ESTIMATE
+#define record_r(x, i) x[i] |= ((~x[i] & 0x00000002) >> 1);
+#define record_w(x, i) x[i] |= 0x00000002;
+// #else
+// #define record_r(x, i)
+// #define record_w(x, i)
+#endif
+
 template <class T>
 class CUDAStream : public Stream<T>
 {
@@ -40,6 +50,12 @@ class CUDAStream : public Stream<T>
     T *d_c;
     T *d_sum;
 
+#ifdef ESTIMATE
+    uint32_t *sa;
+    uint32_t *sb;
+    uint32_t *sc;
+    uint32_t *ssum;
+#endif
 
   public:
 

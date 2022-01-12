@@ -78,6 +78,25 @@ CUDAStream<T>::CUDAStream(const int ARRAY_SIZE, const int device_index)
   check_error();
   cudaMalloc(&d_sum, DOT_NUM_BLOCKS*sizeof(T));
   check_error();
+
+#ifdef ESTIMATE
+  cudaMalloc(&sa, ARRAY_SIZE*sizeof(uint32_t));
+  check_error();
+  cudaMalloc(&sb, ARRAY_SIZE*sizeof(uint32_t));
+  check_error();
+  cudaMalloc(&sc, ARRAY_SIZE*sizeof(uint32_t));
+  check_error();
+  cudaMalloc(&ssum, DOT_NUM_BLOCKS*sizeof(uint32_t));
+  check_error();
+#endif
+
+#endif
+
+
+#ifdef ESTIMATE
+  std::cout << "Estimate Version\n";
+#else
+  std::cout << "Original Version\n";
 #endif
 }
 
@@ -101,23 +120,49 @@ CUDAStream<T>::~CUDAStream()
   check_error();
   cudaFree(d_sum);
   check_error();
+
+#ifdef ESTIMATE
+  cudaFree(sa);
+  check_error();
+  cudaFree(sb);
+  check_error();
+  cudaFree(sc);
+  check_error();
+  cudaFree(ssum);
+  check_error();
+#endif
+
 #endif
 }
 
 
 template <typename T>
+#ifdef ESTIMATE
+__global__ void init_kernel(T * a, T * b, T * c, T initA, T initB, T initC, uint32_t *sa, uint32_t *sb, uint32_t *sc)
+#else
 __global__ void init_kernel(T * a, T * b, T * c, T initA, T initB, T initC)
+#endif
 {
   const int i = blockDim.x * blockIdx.x + threadIdx.x;
   a[i] = initA;
   b[i] = initB;
   c[i] = initC;
+
+#ifdef ESTIMATE   
+  record_w(sa, i)
+  record_w(sb, i)
+  record_w(sc, i)
+#endif
 }
 
 template <class T>
 void CUDAStream<T>::init_arrays(T initA, T initB, T initC)
 {
+#ifdef ESTIMATE
+  init_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, initA, initB, initC, sa, sb, sc);
+#else
   init_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, initA, initB, initC);
+#endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
@@ -147,90 +192,162 @@ void CUDAStream<T>::read_arrays(std::vector<T>& a, std::vector<T>& b, std::vecto
 
 
 template <typename T>
+#ifdef ESTIMATE
+__global__ void copy_kernel(const T * a, T * c, uint32_t *sa, uint32_t *sc)
+#else
 __global__ void copy_kernel(const T * a, T * c)
+#endif
 {
   const int i = blockDim.x * blockIdx.x + threadIdx.x;
   c[i] = a[i];
+
+#ifdef ESTIMATE
+    record_r(sa, i)
+    record_w(sc, i)
+#endif  
 }
 
 template <class T>
 void CUDAStream<T>::copy()
 {
+#ifdef ESTIMATE
+  copy_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_c, sa, sc);
+#else
   copy_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_c);
+#endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
 }
 
 template <typename T>
+#ifdef ESTIMATE
+__global__ void mul_kernel(T * b, const T * c, uint32_t *sb, uint32_t *sc)
+#else
 __global__ void mul_kernel(T * b, const T * c)
+#endif
 {
   const T scalar = startScalar;
   const int i = blockDim.x * blockIdx.x + threadIdx.x;
   b[i] = scalar * c[i];
+
+#ifdef ESTIMATE
+    record_r(sc, i)
+    record_w(sb, i)
+#endif 
 }
 
 template <class T>
 void CUDAStream<T>::mul()
 {
+#ifdef ESTIMATE
+  mul_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_b, d_c, sb, sc);
+#else
   mul_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_b, d_c);
+#endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
 }
 
 template <typename T>
+#ifdef ESTIMATE
+__global__ void add_kernel(const T * a, const T * b, T * c, uint32_t *sa, uint32_t *sb, uint32_t *sc)
+#else
 __global__ void add_kernel(const T * a, const T * b, T * c)
+#endif
 {
   const int i = blockDim.x * blockIdx.x + threadIdx.x;
   c[i] = a[i] + b[i];
+
+#ifdef ESTIMATE
+    record_r(sa, i)
+    record_r(sb, i)
+    record_w(sc, i)
+#endif
 }
 
 template <class T>
 void CUDAStream<T>::add()
 {
+#ifdef ESTIMATE
+  add_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, sa, sb, sc);
+#else  
   add_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c);
+#endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
 }
 
 template <typename T>
+#ifdef ESTIMATE
+__global__ void triad_kernel(T * a, const T * b, const T * c, uint32_t *sa, uint32_t *sb, uint32_t *sc)
+#else
 __global__ void triad_kernel(T * a, const T * b, const T * c)
+#endif
 {
   const T scalar = startScalar;
   const int i = blockDim.x * blockIdx.x + threadIdx.x;
   a[i] = b[i] + scalar * c[i];
+
+#ifdef ESTIMATE
+    record_r(sb, i)
+    record_r(sc, i)
+    record_w(sa, i)
+#endif
 }
 
 template <class T>
 void CUDAStream<T>::triad()
 {
+#ifdef ESTIMATE
+  triad_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, sa, sb, sc);
+#else
   triad_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c);
+#endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
 }
 
 template <typename T>
+#ifdef ESTIMATE
+__global__ void nstream_kernel(T * a, const T * b, const T * c, uint32_t *sa, uint32_t *sb, uint32_t *sc)
+#else
 __global__ void nstream_kernel(T * a, const T * b, const T * c)
+#endif
 {
   const T scalar = startScalar;
   const int i = blockDim.x * blockIdx.x + threadIdx.x;
   a[i] += b[i] + scalar * c[i];
+
+#ifdef ESTIMATE
+    record_r(sb, i)
+    record_r(sc, i)
+    record_w(sa, i)
+#endif
 }
 
 template <class T>
 void CUDAStream<T>::nstream()
 {
+#ifdef ESTIMATE
+  nstream_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, sa, sb, sc);
+#else
   nstream_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c);
+#endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
 }
 
 template <class T>
+#ifdef ESTIMATE
+__global__ void dot_kernel(const T * a, const T * b, T * sum, int array_size, uint32_t *sa, uint32_t *sb, uint32_t *ssum)
+#else
 __global__ void dot_kernel(const T * a, const T * b, T * sum, int array_size)
+#endif
 {
   __shared__ T tb_sum[TBSIZE];
 
@@ -238,8 +355,13 @@ __global__ void dot_kernel(const T * a, const T * b, T * sum, int array_size)
   const size_t local_i = threadIdx.x;
 
   tb_sum[local_i] = 0.0;
-  for (; i < array_size; i += blockDim.x*gridDim.x)
+  for (; i < array_size; i += blockDim.x*gridDim.x) {
     tb_sum[local_i] += a[i] * b[i];
+#ifdef ESTIMATE
+    record_r(sa, i)
+    record_r(sb, i)
+#endif
+  }
 
   for (int offset = blockDim.x / 2; offset > 0; offset /= 2)
   {
@@ -250,14 +372,22 @@ __global__ void dot_kernel(const T * a, const T * b, T * sum, int array_size)
     }
   }
 
-  if (local_i == 0)
+  if (local_i == 0) {
     sum[blockIdx.x] = tb_sum[local_i];
+#ifdef ESTIMATE
+    record_w(ssum, blockIdx.x)
+#endif
+  }
 }
 
 template <class T>
 T CUDAStream<T>::dot()
 {
+#ifdef ESTIMATE
+  dot_kernel<<<DOT_NUM_BLOCKS, TBSIZE>>>(d_a, d_b, d_sum, array_size, sa, sb, ssum);
+#else  
   dot_kernel<<<DOT_NUM_BLOCKS, TBSIZE>>>(d_a, d_b, d_sum, array_size);
+#endif
   check_error();
 
 #if defined(MANAGED) || defined(PAGEFAULT)
