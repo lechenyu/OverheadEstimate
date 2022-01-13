@@ -121,18 +121,18 @@ void OMPStream<T>::init_arrays(T initA, T initB, T initC)
   }
 #endif
 
-    #pragma omp target teams distribute parallel for simd
-    for (int i = 0; i < array_size; i++)
-    {
-      a[i] = initA;
-      b[i] = initB;
-      c[i] = initC;
+  #pragma omp target teams distribute parallel for simd
+  for (int i = 0; i < array_size; i++)
+  {
+    a[i] = initA;
+    b[i] = initB;
+    c[i] = initC;
 #ifdef ESTIMATE    
-      record_w(sa, i)
-      record_w(sb, i)
-      record_w(sc, i)
+    record_w(sa, i)
+    record_w(sb, i)
+    record_w(sc, i)
 #endif
-    }
+  }
 
 #ifdef ESTIMATE
   #pragma omp target update from(sa[0: array_size], sb[0: array_size], sc[0: array_size])
@@ -201,16 +201,16 @@ void OMPStream<T>::copy()
   }
 #endif
 
-    #pragma omp target teams distribute parallel for simd
-    for (int i = 0; i < array_size; i++)
-    {
-      c[i] = a[i];
+  #pragma omp target teams distribute parallel for simd
+  for (int i = 0; i < array_size; i++)
+  {
+    c[i] = a[i];
 
 #ifdef ESTIMATE
     record_r(sa, i)
     record_w(sc, i)
 #endif  
-    }
+  }
   
 #ifdef ESTIMATE
   #pragma omp target update from(sa[0: array_size], sc[0: array_size])
@@ -255,16 +255,16 @@ void OMPStream<T>::mul()
   }
 #endif
 
-    #pragma omp target teams distribute parallel for simd
-    for (int i = 0; i < array_size; i++)
-    {
-      b[i] = scalar * c[i];
+  #pragma omp target teams distribute parallel for simd
+  for (int i = 0; i < array_size; i++)
+  {
+    b[i] = scalar * c[i];
 
 #ifdef ESTIMATE
-      record_r(sc, i)
-      record_w(sb, i)
+    record_r(sc, i)
+    record_w(sb, i)
 #endif   
-    }
+  }
 
 #ifdef ESTIMATE
   #pragma omp target update from(sb[0: array_size], sc[0: array_size])
@@ -311,17 +311,17 @@ void OMPStream<T>::add()
   }
 #endif
 
-    #pragma omp target teams distribute parallel for simd
-    for (int i = 0; i < array_size; i++)
-    {
-      c[i] = a[i] + b[i];
+  #pragma omp target teams distribute parallel for simd
+  for (int i = 0; i < array_size; i++)
+  {
+    c[i] = a[i] + b[i];
 
 #ifdef ESTIMATE
-      record_r(sa, i)
-      record_r(sb, i)
-      record_w(sc, i)
+    record_r(sa, i)
+    record_r(sb, i)
+    record_w(sc, i)
 #endif
-    }
+  }
 
 #ifdef ESTIMATE
   #pragma omp target update from(sa[0: array_size], sb[0: array_size], sc[0: array_size])
@@ -371,17 +371,17 @@ void OMPStream<T>::triad()
   }
 #endif
 
-    #pragma omp target teams distribute parallel for simd
-    for (int i = 0; i < array_size; i++)
-    {
-      a[i] = b[i] + scalar * c[i];
+  #pragma omp target teams distribute parallel for simd
+  for (int i = 0; i < array_size; i++)
+  {
+    a[i] = b[i] + scalar * c[i];
 
 #ifdef ESTIMATE
-      record_r(sb, i)
-      record_r(sc, i)
-      record_w(sa, i)
+    record_r(sb, i)
+    record_r(sc, i)
+    record_w(sa, i)
 #endif
-    }
+  }
 
 #ifdef ESTIMATE
   #pragma omp target update from(sa[0: array_size], sb[0: array_size], sc[0: array_size])
@@ -431,17 +431,17 @@ void OMPStream<T>::nstream()
   }
 #endif
 
-    #pragma omp target teams distribute parallel for simd
-    for (int i = 0; i < array_size; i++)
-    {
-      a[i] += b[i] + scalar * c[i];
+  #pragma omp target teams distribute parallel for simd
+  for (int i = 0; i < array_size; i++)
+  {
+    a[i] += b[i] + scalar * c[i];
 
 #ifdef ESTIMATE
-      record_r(sb, i)
-      record_r(sc, i)
-      record_w(sa, i)
+    record_r(sb, i)
+    record_r(sc, i)
+    record_w(sa, i)
 #endif
-    }
+  }
 
 #ifdef ESTIMATE
   #pragma omp target update from(sa[0: array_size], sb[0: array_size], sc[0: array_size])
@@ -488,16 +488,16 @@ T OMPStream<T>::dot()
   }
 #endif
 
-    #pragma omp target teams distribute parallel for simd map(tofrom: sum) reduction(+:sum)
-      for (int i = 0; i < array_size; i++)
-      {
-        sum += a[i] * b[i];
+  #pragma omp target teams distribute parallel for simd map(tofrom: sum) reduction(+:sum)
+  for (int i = 0; i < array_size; i++)
+  {
+    sum += a[i] * b[i];
 
 #ifdef ESTIMATE
-        record_r(sa, i)
-        record_r(sb, i)
+    record_r(sa, i)
+    record_r(sb, i)
 #endif
-      }
+  }
 
 #ifdef ESTIMATE
   #pragma omp target update from(sa[0: array_size], sb[0: array_size])

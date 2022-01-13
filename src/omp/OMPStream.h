@@ -30,7 +30,7 @@
 #define record_r(x, i) x[i] |= (((~x[i] & 0x00000002) >> 1) | 0x00000004);
 #define record_w(x, i) x[i] |= 0x00000002;
 #define init_shadow(x, s, v)                     \
-  _Pragma("omp for simd")                             \
+  _Pragma("omp for")                             \
   for (int i = 0; i < s; i++)                    \
   {                                              \
     x[i] = v;                                    \
