@@ -20,7 +20,7 @@
 #define ESTIMATE 1
 #define OP1 1 // optimize 1 
 // #define OP2 1 // optimize 2
-#define VERIFY 1
+// #define VERIFY 1
 
 // b0: kernel issues a read before the first write;       0: no, 1: yes
 // b1: kernel writes to this location;                    0: no, 1: yes
@@ -66,6 +66,7 @@ class OMPStream : public Stream<T>
     shadow_type *sa;
     shadow_type *sb;
     shadow_type *sc;
+    uint8_t *compressed;
 #endif
 
   public:

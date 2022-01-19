@@ -67,10 +67,13 @@ OMPStream<T>::OMPStream(const int ARRAY_SIZE, int device)
   this->sa = new shadow_type[array_size]{0};
   this->sb = new shadow_type[array_size]{0};
   this->sc = new shadow_type[array_size]{0};
+  unsigned compressed_array_size = (array_size + 1) / 2;
+  this->compressed = new uint8_t[compressed_array_size * 3]{0};
 
   shadow_type *sa = this->sa;
   shadow_type *sb = this->sb;
   shadow_type *sc = this->sc;
+  uint8_t *compressed = this->compressed;
 #endif
 
 #ifdef OMP_TARGET_GPU
@@ -80,7 +83,11 @@ OMPStream<T>::OMPStream(const int ARRAY_SIZE, int device)
   T *c = this->c;
 
   // Set up data region on device
-  #pragma omp target enter data map(alloc: a[0:array_size], b[0:array_size], c[0:array_size]) shadow_mem(alloc, sa, array_size) shadow_mem(alloc, sb, array_size) shadow_mem(alloc, sc, array_size)
+  #pragma omp target enter data map(alloc: a[0:array_size], b[0:array_size], c[0:array_size]) \
+                                shadow_mem(alloc, sa, array_size) \
+                                shadow_mem(alloc, sb, array_size) \
+                                shadow_mem(alloc, sc, array_size) \
+                                shadow_mem(alloc, compressed, compressed_array_size * 3)
   {}
 
 #ifdef ESTIMATE
@@ -411,11 +418,12 @@ void OMPStream<T>::triad()
   
 #ifdef OP1
   // we assume each shadow array's size is always an even numer
-  unsigned compressed_array_size = array_size / 2 + 1;
-  uint8_t *compressed = new uint8_t[compressed_array_size * 3]{0};
+  unsigned compressed_array_size = (array_size + 1) / 2;
+  //uint8_t *compressed = new uint8_t[compressed_array_size * 3]{0};
+  uint8_t *compressed = this->compressed;
   unsigned offset = 0;
-  #pragma omp target data map(from: compressed[0: compressed_array_size * 3]) // 800GB/s 239.2GB/s 45.7GB/s 29.9GB/s 
-  {
+  // #pragma omp target data map(from: compressed[0: compressed_array_size * 3]) // 800GB/s 239.2GB/s 45.7GB/s 29.9GB/s 
+  // {
   // try a different partition: each thread write to a word (4 bytes)
   #pragma omp target teams distribute parallel for
   for (int i = 0; i < array_size; i += 2)
@@ -440,8 +448,8 @@ void OMPStream<T>::triad()
     compressed[offset + idx1 / 2] = ((sc[idx1] & 0x00000007) << 4) | (sc[idx2] & 0x00000007);
   }
 
-  }
-
+  // }
+  #pragma omp target update from(compressed[0: compressed_array_size * 3])
 #ifdef VERIFY
   verify_compressed("sa", compressed, 0x00000002, array_size, 0);
   verify_compressed("sb", compressed, 0x00000005, array_size, compressed_array_size);
