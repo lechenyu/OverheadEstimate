@@ -18,22 +18,30 @@
 
 #define OMP_TARGET_GPU 1
 #define ESTIMATE 1
-// #define VERIFY 1
+#define OP1 1 // optimize 1 
+// #define OP2 1 // optimize 2
+#define VERIFY 1
 
 // b0: kernel issues a read before the first write;       0: no, 1: yes
 // b1: kernel writes to this location;                    0: no, 1: yes
 // b2: kernel reads from this location;                   0: no, 1: yes
+// b3- offset
+
+// Compression to try
+// 1. only send b0-b2 back to host, and if find race, request the offset
+// 2. merge same adjacent shadow words
+
 
 #ifdef ESTIMATE
 #define shadow_type uint32_t
 #define shadow_mem(t, x, s) map(t: x[0:s]) 
 #define record_r(x, i) x[i] |= (((~x[i] & 0x00000002) >> 1) | 0x00000004);
 #define record_w(x, i) x[i] |= 0x00000002;
-#define init_shadow(x, s, v)                     \
-  _Pragma("omp for")                             \
-  for (int i = 0; i < s; i++)                    \
-  {                                              \
-    x[i] = v;                                    \
+#define init_shadow(x, s, v)                                                      \
+  _Pragma("omp target teams distribute parallel for")                             \
+  for (int i = 0; i < s; i++)                                                     \
+  {                                                                               \
+    x[i] = v;                                                                     \
   }
 
 #else

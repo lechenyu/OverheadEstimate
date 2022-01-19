@@ -27,6 +27,30 @@ void verify_shadow(const std::string &name, shadow_type *shadow, shadow_type val
   }
   std::cout << name << " passes the verification" << std::endl;
 }
+
+void verify_compressed(const std::string &name, uint8_t *compressed, shadow_type value, int len, int offset)
+{
+  for (int i = 0; i < len; i++)
+  {
+    int val = compressed[offset + i / 2];
+    if ((i & 0x00000001) == 0) 
+    {
+      val = val & 0x00000007;
+    }
+    else
+    {
+      val = (val >> 4) & 0x00000007;
+    }
+
+    if (val != value) 
+    {
+      std::cout << "Some elements in " << name << " are not equal to " << value << std::endl;
+      std::cout << "The first inconsistent element is " << compressed << "[" << offset + i / 2 << "] = " << compressed[offset + i / 2] << std::endl;
+      assert(0);
+    }
+  }
+  std::cout << name << " passes the verification after compression" << std::endl;
+} 
 #endif
 
 template <class T>
@@ -60,12 +84,12 @@ OMPStream<T>::OMPStream(const int ARRAY_SIZE, int device)
   {}
 
 #ifdef ESTIMATE
-  #pragma omp target parallel
-  {
+  // #pragma omp target parallel
+  // {
     init_shadow(sa, array_size, 0)
     init_shadow(sb, array_size, 0)
     init_shadow(sc, array_size, 0)
-  }
+  // }
 #endif
 
 #endif
@@ -113,12 +137,12 @@ void OMPStream<T>::init_arrays(T initA, T initB, T initC)
   shadow_type *sa = this->sa;
   shadow_type *sb = this->sb;
   shadow_type *sc = this->sc;
-  #pragma omp target parallel
-  {
+  // #pragma omp target parallel
+  // {
     init_shadow(sa, array_size, 0)
     init_shadow(sb, array_size, 0)
     init_shadow(sc, array_size, 0)
-  }
+  // }
 #endif
 
   #pragma omp target teams distribute parallel for simd
@@ -194,11 +218,11 @@ void OMPStream<T>::copy()
   shadow_type *sa = this->sa;
   shadow_type *sc = this->sc;
 
-  #pragma omp target parallel
-  {
+  // #pragma omp target parallel
+  // {
     init_shadow(sa, array_size, 0)
     init_shadow(sc, array_size, 0)
-  }
+  // }
 #endif
 
   #pragma omp target teams distribute parallel for simd
@@ -248,11 +272,11 @@ void OMPStream<T>::mul()
 #ifdef ESTIMATE
   shadow_type *sb = this->sb;
   shadow_type *sc = this->sc;
-  #pragma omp target parallel
-  {
+  // #pragma omp target parallel
+  // {
     init_shadow(sb, array_size, 0)
     init_shadow(sc, array_size, 0)
-  }
+  // }
 #endif
 
   #pragma omp target teams distribute parallel for simd
@@ -303,12 +327,12 @@ void OMPStream<T>::add()
   shadow_type *sa = this->sa;
   shadow_type *sb = this->sb;
   shadow_type *sc = this->sc;
-  #pragma omp target parallel
-  {
+  // #pragma omp target parallel
+  // {
     init_shadow(sa, array_size, 0)
     init_shadow(sb, array_size, 0)
     init_shadow(sc, array_size, 0)
-  }
+  // }
 #endif
 
   #pragma omp target teams distribute parallel for simd
@@ -363,12 +387,12 @@ void OMPStream<T>::triad()
   shadow_type *sa = this->sa;
   shadow_type *sb = this->sb;
   shadow_type *sc = this->sc;
-  #pragma omp target parallel
-  {
+  // #pragma omp target parallel
+  // {
     init_shadow(sa, array_size, 0)
     init_shadow(sb, array_size, 0)
     init_shadow(sc, array_size, 0)
-  }
+  // }
 #endif
 
   #pragma omp target teams distribute parallel for simd
@@ -384,14 +408,62 @@ void OMPStream<T>::triad()
   }
 
 #ifdef ESTIMATE
-  #pragma omp target update from(sa[0: array_size], sb[0: array_size], sc[0: array_size])
+  
+#ifdef OP1
+  // we assume each shadow array's size is always an even numer
+  unsigned compressed_array_size = array_size / 2 + 1;
+  uint8_t *compressed = new uint8_t[compressed_array_size * 3]{0};
+  unsigned offset = 0;
+  #pragma omp target data map(from: compressed[0: compressed_array_size * 3]) // 800GB/s 239.2GB/s 45.7GB/s 29.9GB/s 
+  {
+  // try a different partition: each thread write to a word (4 bytes)
+  #pragma omp target teams distribute parallel for
+  for (int i = 0; i < array_size; i += 2)
+  {
+    int idx1 = i, idx2 = i + 1;
+    compressed[offset + idx1 / 2] = ((sa[idx1] & 0x00000007) << 4) | (sa[idx2] & 0x00000007);
+  }
+  offset += compressed_array_size;
+
+  #pragma omp target teams distribute parallel for
+  for (int i = 0; i < array_size; i += 2)
+  {
+    int idx1 = i, idx2 = i + 1;
+    compressed[offset + idx1 / 2] = ((sb[idx1] & 0x00000007) << 4) | (sb[idx2] & 0x00000007);
+  }
+  offset += compressed_array_size;
+
+  #pragma omp target teams distribute parallel for
+  for (int i = 0; i < array_size; i += 2)
+  {
+    int idx1 = i, idx2 = i + 1;
+    compressed[offset + idx1 / 2] = ((sc[idx1] & 0x00000007) << 4) | (sc[idx2] & 0x00000007);
+  }
+
+  }
+
+#ifdef VERIFY
+  verify_compressed("sa", compressed, 0x00000002, array_size, 0);
+  verify_compressed("sb", compressed, 0x00000005, array_size, compressed_array_size);
+  verify_compressed("sc", compressed, 0x00000005, array_size, compressed_array_size * 2);
 #endif
 
-#if defined(ESTIMATE) && defined(VERIFY)
+#elif defined(OP2)
+
+#else
+  #pragma omp target update from(sa[0: array_size])
+  #pragma omp target update from(sb[0: array_size])
+  #pragma omp target update from(sc[0: array_size])
+
+#ifdef VERIFY
   verify_shadow("sa", sa, 0x00000002, array_size);
   verify_shadow("sb", sb, 0x00000005, array_size);
   verify_shadow("sc", sc, 0x00000005, array_size);
 #endif
+#endif // OP
+#endif // ESTIMATE
+
+
 
 #else
   #pragma omp parallel for
@@ -423,12 +495,12 @@ void OMPStream<T>::nstream()
   shadow_type *sa = this->sa;
   shadow_type *sb = this->sb;
   shadow_type *sc = this->sc;
-  #pragma omp target parallel
-  {
+  // #pragma omp target parallel
+  // {
     init_shadow(sa, array_size, 0)
     init_shadow(sb, array_size, 0)
     init_shadow(sc, array_size, 0)
-  }
+  // }
 #endif
 
   #pragma omp target teams distribute parallel for simd
@@ -481,11 +553,11 @@ T OMPStream<T>::dot()
 #ifdef ESTIMATE
   shadow_type *sa = this->sa;
   shadow_type *sb = this->sb;
-  #pragma omp target parallel
-  {
+  // #pragma omp target parallel
+  // {
     init_shadow(sa, array_size, 0)
     init_shadow(sb, array_size, 0)
-  }
+  // }
 #endif
 
   #pragma omp target teams distribute parallel for simd map(tofrom: sum) reduction(+:sum)
