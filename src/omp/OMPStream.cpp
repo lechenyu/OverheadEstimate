@@ -408,8 +408,11 @@ void OMPStream<T>::triad()
     a[i] = b[i] + scalar * c[i];
 
 #ifdef ESTIMATE
+    // #pragma omp atomic update
     record_r(sb, i)
+    // #pragma omp atomic update
     record_r(sc, i)
+    // #pragma omp atomic update
     record_w(sa, i)
 #endif
   }

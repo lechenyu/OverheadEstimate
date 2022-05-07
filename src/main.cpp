@@ -289,7 +289,10 @@ void run()
 #elif defined(OMP)
   // Use the OpenMP implementation
   stream = new OMPStream<T>(ARRAY_SIZE, deviceIndex);
-
+  //#pragma omp target
+  //{
+    //printf("Device num = %d\n", omp_get_device_num());
+  //}
 #endif
 
   stream->init_arrays(startA, startB, startC);
