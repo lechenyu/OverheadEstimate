@@ -24,14 +24,21 @@
 #define TBSIZE 1024
 #define DOT_NUM_BLOCKS 256
 
-#define ESTIMATE 1
+#define EXPLICIT 1001
+#define MANAGED  1002
+#define PINNED   1003
+#define ESTIMATE EXPLICIT
+
+#define NONE       2001
+#define NOPC       2002
+#define RLE        2003
+#define NOMEMCPY   2004
+#define OPTIMIZE RLE
 
 #ifdef ESTIMATE
-#define record_r(x, i) x[i] |= ((~x[i] & 0x00000002) >> 1);
+#define record_r(x, i) x[i] |= (((~x[i] & 0x00000002) >> 1) | 0x00000004);
 #define record_w(x, i) x[i] |= 0x00000002;
-// #else
-// #define record_r(x, i)
-// #define record_w(x, i)
+#define shadow_t uint32_t
 #endif
 
 template <class T>
@@ -51,10 +58,27 @@ class CUDAStream : public Stream<T>
     T *d_sum;
 
 #ifdef ESTIMATE
-    uint32_t *sa;
-    uint32_t *sb;
-    uint32_t *sc;
-    uint32_t *ssum;
+    shadow_t *sa;
+    shadow_t *sb;
+    shadow_t *sc;
+    shadow_t *ssum;
+
+    shadow_t *d_sa;
+    shadow_t *d_sb;
+    shadow_t *d_sc;
+    shadow_t *d_ssum;
+
+#if OPTIMIZE == RLE
+    uint8_t *value_sa;
+    uint8_t *value_sb;
+    uint8_t *value_sc;
+    uint8_t *value_ssum;
+    int *index_sa;
+    int *index_sb;
+    int *index_sc;
+    int *index_ssum;
+#endif
+
 #endif
 
   public:

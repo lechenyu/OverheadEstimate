@@ -7,16 +7,73 @@
 
 
 #include "CUDAStream.h"
+#ifdef ESTIMATE
+#include "rle.h"
+#endif
 
-void check_error(void)
+#define check_error() { check_error_impl(__FILE__, __LINE__); }
+void check_error_impl(const char *file, int line)
 {
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess)
   {
-    std::cerr << "Error: " << cudaGetErrorString(err) << std::endl;
+    std::cerr << "Error at " << file << " : line " << line << " >>> " << cudaGetErrorString(err) << std::endl;
     exit(err);
   }
 }
+
+#ifdef ESTIMATE
+__global__ void extract_three_bits(uint8_t *dest, shadow_t *src, size_t length) {
+  const int i = blockDim.x * blockIdx.x + threadIdx.x;
+  if (i < length / 2) {
+    const int left = 2 * i;
+    const int right = 2 * i + 1;
+    dest[i] = ((src[left] & 0x00000007) << 4) | (src[right] & 0x00000007);
+  }
+}
+
+void compress_and_memcpy(shadow_t *host, shadow_t *device, size_t length) {
+  uint8_t *compressed;
+  int block_num = (length + 2*TBSIZE - 1)/(2*TBSIZE);
+  cudaMalloc(&compressed, length / 2);
+  check_error();
+  extract_three_bits<<<block_num, TBSIZE>>>(compressed, device, length);
+  check_error();
+  cudaMemcpy(host, compressed, length / 2, cudaMemcpyDeviceToHost);
+  check_error();
+  cudaFree(compressed);
+  check_error();
+}
+
+size_t rle_and_memcpy(uint8_t *host_value, int *host_index, shadow_t *device, size_t length) {
+  uint8_t *compressed;
+  int block_num = (length + 2*TBSIZE - 1)/(2*TBSIZE);
+  cudaMalloc(&compressed, length / 2);
+  check_error();
+  extract_three_bits<<<block_num, TBSIZE>>>(compressed, device, length);
+  check_error();
+  RleResult<uint8_t> &&d_result = parallel_rle_impl(compressed, length / 2);
+  cudaMemcpy(host_value, d_result.value, d_result.len * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaMemcpy(host_index, d_result.index, d_result.len * sizeof(int), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaFree(compressed);
+  check_error();
+  return d_result.len;
+}
+
+template<typename T>
+void verify_shadow(std::string name, T *s, size_t length, T val) {
+  int i;
+  for (i = 0; i < length && s[i] == val; i++) {}
+  if (i == length) {
+    // std::cout << name << " passes verification\n";
+  } else {
+    std::cout << name << "[" << i << "] = " << s[i] << ", expect " << val << "\n";
+    exit(1);
+  }
+}
+#endif
 
 template <class T>
 CUDAStream<T>::CUDAStream(const int ARRAY_SIZE, const int device_index)
@@ -78,25 +135,75 @@ CUDAStream<T>::CUDAStream(const int ARRAY_SIZE, const int device_index)
   check_error();
   cudaMalloc(&d_sum, DOT_NUM_BLOCKS*sizeof(T));
   check_error();
-
-#ifdef ESTIMATE
-  cudaMalloc(&sa, ARRAY_SIZE*sizeof(uint32_t));
-  check_error();
-  cudaMalloc(&sb, ARRAY_SIZE*sizeof(uint32_t));
-  check_error();
-  cudaMalloc(&sc, ARRAY_SIZE*sizeof(uint32_t));
-  check_error();
-  cudaMalloc(&ssum, DOT_NUM_BLOCKS*sizeof(uint32_t));
-  check_error();
 #endif
 
+#if ESTIMATE == EXPLICIT
+  cudaMalloc(&d_sa, ARRAY_SIZE * sizeof(shadow_t));
+  check_error();
+  cudaMalloc(&d_sb, ARRAY_SIZE * sizeof(shadow_t));
+  check_error();
+  cudaMalloc(&d_sc, ARRAY_SIZE * sizeof(shadow_t));
+  check_error();
+  cudaMalloc(&d_ssum, DOT_NUM_BLOCKS * sizeof(shadow_t));
+  check_error();
+  sa = (shadow_t *)malloc(ARRAY_SIZE * sizeof(shadow_t));
+  sb = (shadow_t *)malloc(ARRAY_SIZE * sizeof(shadow_t));
+  sc = (shadow_t *)malloc(ARRAY_SIZE * sizeof(shadow_t));
+  ssum = (shadow_t *)malloc(DOT_NUM_BLOCKS * sizeof(shadow_t));
+#if OPTIMIZE == RLE
+  value_sa = (uint8_t *)malloc(ARRAY_SIZE * sizeof(uint8_t));
+  value_sb = (uint8_t *)malloc(ARRAY_SIZE * sizeof(uint8_t));
+  value_sc = (uint8_t *)malloc(ARRAY_SIZE * sizeof(uint8_t));
+  value_ssum = (uint8_t *)malloc(DOT_NUM_BLOCKS * sizeof(uint8_t));
+  index_sa = (int *)malloc(ARRAY_SIZE * sizeof(int));
+  index_sb = (int *)malloc(ARRAY_SIZE * sizeof(int));
+  index_sc = (int *)malloc(ARRAY_SIZE * sizeof(int));
+  index_ssum = (int *)malloc(DOT_NUM_BLOCKS * sizeof(int));
+#endif
+
+#elif ESTIMATE == MANAGED
+  cudaMallocManaged(&d_sa, ARRAY_SIZE * sizeof(shadow_t));
+  check_error();
+  cudaMallocManaged(&d_sb, ARRAY_SIZE * sizeof(shadow_t));
+  check_error();
+  cudaMallocManaged(&d_sc, ARRAY_SIZE * sizeof(shadow_t));
+  check_error();
+  cudaMallocManaged(&d_ssum, DOT_NUM_BLOCKS * sizeof(shadow_t));
+  check_error();
+  sa = d_sa;
+  sb = d_sb;
+  sc = d_sc;
+  ssum = d_ssum;
+#elif ESTIMATE == PINNED
+  unsigned int flags = cudaHostAllocDefault;
+  cudaHostAlloc(&sa, ARRAY_SIZE * sizeof(shadow_t), flags);
+  check_error();
+  cudaHostAlloc(&sb, ARRAY_SIZE * sizeof(shadow_t), flags);
+  check_error();
+  cudaHostAlloc(&sc, ARRAY_SIZE * sizeof(shadow_t), flags);
+  check_error();
+  cudaHostAlloc(&ssum, DOT_NUM_BLOCKS * sizeof(shadow_t), flags);
+  check_error();
+  d_sa = sa;
+  d_sb = sb;
+  d_sc = sc;
+  d_ssum = ssum;
 #endif
 
 
 #ifdef ESTIMATE
-  std::cout << "Estimate Version\n";
+#if ESTIMATE == EXPLICIT
+  std::cout << "Explicit device memory version\n";
+#elif ESTIMATE == MANAGED
+  std::cout << "Unified memory version\n";
+#elif ESTIMATE == PINNED
+  std::cout << "Page-locked host memory version\n";
 #else
-  std::cout << "Original Version\n";
+  std::cout << "Unknown ESTIMATE type\n";
+  exit(1);
+#endif // end of #if ESTIMATE
+#else
+  std::cout << "Original version\n";
 #endif
 }
 
@@ -120,49 +227,43 @@ CUDAStream<T>::~CUDAStream()
   check_error();
   cudaFree(d_sum);
   check_error();
-
-#ifdef ESTIMATE
-  cudaFree(sa);
-  check_error();
-  cudaFree(sb);
-  check_error();
-  cudaFree(sc);
-  check_error();
-  cudaFree(ssum);
-  check_error();
 #endif
 
+#if ESTIMATE == EXPLICIT || ESTIMATE == MANAGED
+  cudaFree(d_sa);
+  check_error();
+  cudaFree(d_sb);
+  check_error();
+  cudaFree(d_sc);
+  check_error();
+  cudaFree(d_ssum);
+  check_error();
+#elif ESTIMATE == PINNED
+  cudaFreeHost(sa);
+  check_error();
+  cudaFreeHost(sb);
+  check_error();
+  cudaFreeHost(sc);
+  check_error();
+  cudaFreeHost(ssum);
+  check_error();
 #endif
 }
 
 
 template <typename T>
-#ifdef ESTIMATE
-__global__ void init_kernel(T * a, T * b, T * c, T initA, T initB, T initC, uint32_t *sa, uint32_t *sb, uint32_t *sc)
-#else
 __global__ void init_kernel(T * a, T * b, T * c, T initA, T initB, T initC)
-#endif
 {
   const int i = blockDim.x * blockIdx.x + threadIdx.x;
   a[i] = initA;
   b[i] = initB;
   c[i] = initC;
-
-#ifdef ESTIMATE   
-  record_w(sa, i)
-  record_w(sb, i)
-  record_w(sc, i)
-#endif
 }
 
 template <class T>
 void CUDAStream<T>::init_arrays(T initA, T initB, T initC)
 {
-#ifdef ESTIMATE
-  init_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, initA, initB, initC, sa, sb, sc);
-#else
   init_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, initA, initB, initC);
-#endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
@@ -193,7 +294,7 @@ void CUDAStream<T>::read_arrays(std::vector<T>& a, std::vector<T>& b, std::vecto
 
 template <typename T>
 #ifdef ESTIMATE
-__global__ void copy_kernel(const T * a, T * c, uint32_t *sa, uint32_t *sc)
+__global__ void copy_kernel(const T * a, T * c, uint32_t *d_sa, uint32_t *d_sc)
 #else
 __global__ void copy_kernel(const T * a, T * c)
 #endif
@@ -202,8 +303,8 @@ __global__ void copy_kernel(const T * a, T * c)
   c[i] = a[i];
 
 #ifdef ESTIMATE
-    record_r(sa, i)
-    record_w(sc, i)
+  record_r(d_sa, i)
+  record_w(d_sc, i)
 #endif  
 }
 
@@ -211,18 +312,60 @@ template <class T>
 void CUDAStream<T>::copy()
 {
 #ifdef ESTIMATE
-  copy_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_c, sa, sc);
+#if ESTIMATE == EXPLICIT || ESTIMATE == MANAGED
+  cudaMemset(d_sa, 0, array_size * sizeof(shadow_t));
+  cudaMemset(d_sc, 0, array_size * sizeof(shadow_t));
+#elif ESTIMATE == PINNED
+  memset(sa, 0, array_size * sizeof(shadow_t));
+  memset(sc, 0, array_size * sizeof(shadow_t));
+#endif
+  copy_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_c, d_sa, d_sc);
 #else
   copy_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_c);
 #endif
-  check_error();
+  check_error();  
   cudaDeviceSynchronize();
   check_error();
+
+#if ESTIMATE == EXPLICIT
+#if OPTIMIZE == NONE
+  cudaMemcpy(sa, d_sa, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaMemcpy(sc, d_sc, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+#elif OPTIMIZE == NOPC
+  compress_and_memcpy(sa, d_sa, array_size);
+  compress_and_memcpy(sc, d_sc, array_size);
+#elif OPTIMIZE == RLE
+  size_t len_sa = rle_and_memcpy(value_sa, index_sa, d_sa, array_size);
+  size_t len_sc = rle_and_memcpy(value_sc, index_sc, d_sc, array_size);
+  // for (int i = 0; i < len_sa; i++) {
+  //   std::cout << index_sa[i] << ":" << (unsigned)value_sa[i] << " ";
+  // }
+  // std::cout << std::endl;
+  // for (int i = 0; i < len_sc; i++) {
+  //   std::cout << index_sc[i] << ":" << (unsigned)value_sc[i] << " ";
+  // }
+  // std::cout << std::endl;
+#elif OPTIMIZE == NOMEMCPY
+
+#endif // end of #if OPTIMIZE
+#endif
+
+// #ifdef ESTIMATE
+// #if OPTIMIZE == NONE
+//   verify_shadow<shadow_t>("sa", sa, array_size, 0x00000005);
+//   verify_shadow<shadow_t>("sc", sc, array_size, 0x00000002);
+// #elif OPTIMIZE == NOPC
+//   verify_shadow<uint8_t>("sa", (uint8_t *)sa, array_size / 2, 0x55);
+//   verify_shadow<uint8_t>("sc", (uint8_t *)sc, array_size / 2, 0x22);
+// #endif // end of #if OPTIMIZE
+// #endif
 }
 
 template <typename T>
 #ifdef ESTIMATE
-__global__ void mul_kernel(T * b, const T * c, uint32_t *sb, uint32_t *sc)
+__global__ void mul_kernel(T * b, const T * c, uint32_t *d_sb, uint32_t *d_sc)
 #else
 __global__ void mul_kernel(T * b, const T * c)
 #endif
@@ -232,8 +375,8 @@ __global__ void mul_kernel(T * b, const T * c)
   b[i] = scalar * c[i];
 
 #ifdef ESTIMATE
-    record_r(sc, i)
-    record_w(sb, i)
+    record_r(d_sc, i)
+    record_w(d_sb, i)
 #endif 
 }
 
@@ -241,18 +384,42 @@ template <class T>
 void CUDAStream<T>::mul()
 {
 #ifdef ESTIMATE
-  mul_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_b, d_c, sb, sc);
+#if ESTIMATE == EXPLICIT || ESTIMATE == MANAGED
+  cudaMemset(d_sb, 0, array_size * sizeof(shadow_t));
+  cudaMemset(d_sc, 0, array_size * sizeof(shadow_t));
+#elif ESTIMATE == PINNED
+  memset(sb, 0, array_size * sizeof(shadow_t));
+  memset(sc, 0, array_size * sizeof(shadow_t));
+#endif
+  mul_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_b, d_c, d_sb, d_sc);
 #else
   mul_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_b, d_c);
 #endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
+
+#if ESTIMATE == EXPLICIT
+#if OPTIMIZE == NONE
+  cudaMemcpy(sb, d_sb, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaMemcpy(sc, d_sc, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+#elif OPTIMIZE == NOPC
+  compress_and_memcpy(sb, d_sb, array_size);
+  compress_and_memcpy(sc, d_sc, array_size);
+#elif OPTIMIZE == RLE
+  size_t len_sb = rle_and_memcpy(value_sb, index_sb, d_sb, array_size);
+  size_t len_sc = rle_and_memcpy(value_sc, index_sc, d_sc, array_size);
+#elif OPTIMIZE == NOMEMCPY
+
+#endif // end of #if OPTIMIZE
+#endif
 }
 
 template <typename T>
 #ifdef ESTIMATE
-__global__ void add_kernel(const T * a, const T * b, T * c, uint32_t *sa, uint32_t *sb, uint32_t *sc)
+__global__ void add_kernel(const T * a, const T * b, T * c, uint32_t *d_sa, uint32_t *d_sb, uint32_t *d_sc)
 #else
 __global__ void add_kernel(const T * a, const T * b, T * c)
 #endif
@@ -261,9 +428,9 @@ __global__ void add_kernel(const T * a, const T * b, T * c)
   c[i] = a[i] + b[i];
 
 #ifdef ESTIMATE
-    record_r(sa, i)
-    record_r(sb, i)
-    record_w(sc, i)
+    record_r(d_sa, i)
+    record_r(d_sb, i)
+    record_w(d_sc, i)
 #endif
 }
 
@@ -271,18 +438,48 @@ template <class T>
 void CUDAStream<T>::add()
 {
 #ifdef ESTIMATE
-  add_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, sa, sb, sc);
+#if ESTIMATE == EXPLICIT || ESTIMATE == MANAGED
+  cudaMemset(d_sa, 0, array_size * sizeof(shadow_t));
+  cudaMemset(d_sb, 0, array_size * sizeof(shadow_t));
+  cudaMemset(d_sc, 0, array_size * sizeof(shadow_t));
+#elif ESTIMATE == PINNED
+  memset(sa, 0, array_size * sizeof(shadow_t));
+  memset(sb, 0, array_size * sizeof(shadow_t));
+  memset(sc, 0, array_size * sizeof(shadow_t));
+#endif
+  add_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, d_sa, d_sb, d_sc);
 #else  
   add_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c);
 #endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
+
+#if ESTIMATE == EXPLICIT
+#if OPTIMIZE == NONE
+  cudaMemcpy(sa, d_sa, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaMemcpy(sb, d_sb, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaMemcpy(sc, d_sc, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+#elif OPTIMIZE == NOPC
+  compress_and_memcpy(sa, d_sa, array_size);
+  compress_and_memcpy(sb, d_sb, array_size);
+  compress_and_memcpy(sc, d_sc, array_size);
+#elif OPTIMIZE == RLE
+  size_t len_sa = rle_and_memcpy(value_sa, index_sa, d_sa, array_size);
+  size_t len_sb = rle_and_memcpy(value_sb, index_sb, d_sb, array_size);
+  size_t len_sc = rle_and_memcpy(value_sc, index_sc, d_sc, array_size);
+#elif OPTIMIZE == NOMEMCPY
+
+#endif // end of #if OPTIMIZE
+#endif
 }
 
 template <typename T>
 #ifdef ESTIMATE
-__global__ void triad_kernel(T * a, const T * b, const T * c, uint32_t *sa, uint32_t *sb, uint32_t *sc)
+__global__ void triad_kernel(T * a, const T * b, const T * c, uint32_t *d_sa, uint32_t *d_sb, uint32_t *d_sc)
 #else
 __global__ void triad_kernel(T * a, const T * b, const T * c)
 #endif
@@ -292,9 +489,9 @@ __global__ void triad_kernel(T * a, const T * b, const T * c)
   a[i] = b[i] + scalar * c[i];
 
 #ifdef ESTIMATE
-    record_r(sb, i)
-    record_r(sc, i)
-    record_w(sa, i)
+    record_r(d_sb, i)
+    record_r(d_sc, i)
+    record_w(d_sa, i)
 #endif
 }
 
@@ -302,18 +499,48 @@ template <class T>
 void CUDAStream<T>::triad()
 {
 #ifdef ESTIMATE
-  triad_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, sa, sb, sc);
+#if ESTIMATE == EXPLICIT || ESTIMATE == MANAGED
+  cudaMemset(d_sa, 0, array_size * sizeof(shadow_t));
+  cudaMemset(d_sb, 0, array_size * sizeof(shadow_t));
+  cudaMemset(d_sc, 0, array_size * sizeof(shadow_t));
+#elif ESTIMATE == PINNED
+  memset(sa, 0, array_size * sizeof(shadow_t));
+  memset(sb, 0, array_size * sizeof(shadow_t));
+  memset(sc, 0, array_size * sizeof(shadow_t));
+#endif
+  triad_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, d_sa, d_sb, d_sc);
 #else
   triad_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c);
 #endif
   check_error();
   cudaDeviceSynchronize();
   check_error();
+
+#if ESTIMATE == EXPLICIT
+#if OPTIMIZE == NONE
+  cudaMemcpy(sa, d_sa, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaMemcpy(sb, d_sb, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaMemcpy(sc, d_sc, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+#elif OPTIMIZE == NOPC
+  compress_and_memcpy(sa, d_sa, array_size);
+  compress_and_memcpy(sb, d_sb, array_size);
+  compress_and_memcpy(sc, d_sc, array_size);
+#elif OPTIMIZE == RLE
+  size_t len_sa = rle_and_memcpy(value_sa, index_sa, d_sa, array_size);
+  size_t len_sb = rle_and_memcpy(value_sb, index_sb, d_sb, array_size);
+  size_t len_sc = rle_and_memcpy(value_sc, index_sc, d_sc, array_size);
+#elif OPTIMIZE == NOMEMCPY
+
+#endif // end of #if OPTIMIZE
+#endif
 }
 
 template <typename T>
 #ifdef ESTIMATE
-__global__ void nstream_kernel(T * a, const T * b, const T * c, uint32_t *sa, uint32_t *sb, uint32_t *sc)
+__global__ void nstream_kernel(T * a, const T * b, const T * c, uint32_t *d_sa, uint32_t *d_sb, uint32_t *d_sc)
 #else
 __global__ void nstream_kernel(T * a, const T * b, const T * c)
 #endif
@@ -323,9 +550,9 @@ __global__ void nstream_kernel(T * a, const T * b, const T * c)
   a[i] += b[i] + scalar * c[i];
 
 #ifdef ESTIMATE
-    record_r(sb, i)
-    record_r(sc, i)
-    record_w(sa, i)
+    // record_r(d_sb, i)
+    // record_r(d_sc, i)
+    // record_w(d_sa, i)
 #endif
 }
 
@@ -333,7 +560,7 @@ template <class T>
 void CUDAStream<T>::nstream()
 {
 #ifdef ESTIMATE
-  nstream_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, sa, sb, sc);
+  nstream_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c, d_sa, d_sb, d_sc);
 #else
   nstream_kernel<<<array_size/TBSIZE, TBSIZE>>>(d_a, d_b, d_c);
 #endif
@@ -344,7 +571,7 @@ void CUDAStream<T>::nstream()
 
 template <class T>
 #ifdef ESTIMATE
-__global__ void dot_kernel(const T * a, const T * b, T * sum, int array_size, uint32_t *sa, uint32_t *sb, uint32_t *ssum)
+__global__ void dot_kernel(const T * a, const T * b, T * sum, int array_size, uint32_t *d_sa, uint32_t *d_sb, uint32_t *d_ssum)
 #else
 __global__ void dot_kernel(const T * a, const T * b, T * sum, int array_size)
 #endif
@@ -358,8 +585,8 @@ __global__ void dot_kernel(const T * a, const T * b, T * sum, int array_size)
   for (; i < array_size; i += blockDim.x*gridDim.x) {
     tb_sum[local_i] += a[i] * b[i];
 #ifdef ESTIMATE
-    record_r(sa, i)
-    record_r(sb, i)
+    record_r(d_sa, i)
+    record_r(d_sb, i)
 #endif
   }
 
@@ -375,7 +602,7 @@ __global__ void dot_kernel(const T * a, const T * b, T * sum, int array_size)
   if (local_i == 0) {
     sum[blockIdx.x] = tb_sum[local_i];
 #ifdef ESTIMATE
-    record_w(ssum, blockIdx.x)
+    record_w(d_ssum, blockIdx.x)
 #endif
   }
 }
@@ -384,7 +611,16 @@ template <class T>
 T CUDAStream<T>::dot()
 {
 #ifdef ESTIMATE
-  dot_kernel<<<DOT_NUM_BLOCKS, TBSIZE>>>(d_a, d_b, d_sum, array_size, sa, sb, ssum);
+#if ESTIMATE == EXPLICIT || ESTIMATE == MANAGED
+  cudaMemset(d_sa, 0, array_size * sizeof(shadow_t));
+  cudaMemset(d_sb, 0, array_size * sizeof(shadow_t));
+  cudaMemset(d_ssum, 0, DOT_NUM_BLOCKS * sizeof(shadow_t));
+#elif ESTIMATE == PINNED
+  memset(sa, 0, array_size * sizeof(shadow_t));
+  memset(sb, 0, array_size * sizeof(shadow_t));
+  memset(ssum, 0, DOT_NUM_BLOCKS * sizeof(shadow_t));
+#endif
+  dot_kernel<<<DOT_NUM_BLOCKS, TBSIZE>>>(d_a, d_b, d_sum, array_size, d_sa, d_sb, d_ssum);
 #else  
   dot_kernel<<<DOT_NUM_BLOCKS, TBSIZE>>>(d_a, d_b, d_sum, array_size);
 #endif
@@ -408,6 +644,26 @@ T CUDAStream<T>::dot()
 #endif
   }
 
+#if ESTIMATE == EXPLICIT
+#if OPTIMIZE == NONE
+  cudaMemcpy(sa, d_sa, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaMemcpy(sb, d_sb, array_size * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+  cudaMemcpy(ssum, d_ssum, DOT_NUM_BLOCKS * sizeof(shadow_t), cudaMemcpyDeviceToHost);
+  check_error();
+#elif OPTIMIZE == NOPC
+  compress_and_memcpy(sa, d_sa, array_size);
+  compress_and_memcpy(sb, d_sb, array_size);
+  compress_and_memcpy(ssum, d_ssum, DOT_NUM_BLOCKS);
+#elif OPTIMIZE == RLE
+  size_t len_sa = rle_and_memcpy(value_sa, index_sa, d_sa, array_size);
+  size_t len_sb = rle_and_memcpy(value_sb, index_sb, d_sb, array_size);
+  size_t len_ssum = rle_and_memcpy(value_ssum, index_ssum, d_ssum, DOT_NUM_BLOCKS);
+#elif OPTIMIZE == NOMEMCPY
+
+#endif // end of #if OPTIMIZE
+#endif
   return sum;
 }
 

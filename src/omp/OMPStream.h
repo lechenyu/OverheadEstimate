@@ -17,8 +17,8 @@
 #define IMPLEMENTATION_STRING "OpenMP"
 
 #define OMP_TARGET_GPU 1
-#define ESTIMATE 1
-#define OP1 1 // optimize 1 
+// #define ESTIMATE 1
+// #define OP1 1 // optimize 1 
 // #define OP2 1 // optimize 2
 // #define VERIFY 1
 

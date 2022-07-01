@@ -66,7 +66,7 @@ endmacro()
 set(EXE_NAME babelstream)
 
 # select default build type
-set(CMAKE_BUILD_TYPE "Release")
+# set(CMAKE_BUILD_TYPE "Release")
 # for chrono and some basic CXX features, models can overwrite this if required
 set(CMAKE_CXX_STANDARD 11)
 
